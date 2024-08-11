@@ -1,0 +1,61 @@
+package column
+
+import (
+	"fmt"
+	"github.com/apache/arrow/go/v17/arrow"
+	"github.com/apache/arrow/go/v17/arrow/array"
+)
+
+type {{.TypeName}}Handler struct {
+	field arrow.Field
+	items *[]{{.Type}}
+	index int
+}
+
+func (h *{{.TypeName}}Handler) GetIndex() int {
+	return h.index
+}
+
+func (h *{{.TypeName}}Handler) GetValue() any {
+	return new({{.Type}})
+}
+
+func (h *{{.TypeName}}Handler) Add(v any) error {
+	if v == nil {
+		*h.items = append(*h.items, 0)
+		return nil
+	}
+	var res {{.Type}}
+	if item, ok := v.(*{{.Type}}); ok {
+		res = *item
+	} else {
+		return fmt.Errorf("cannot convert %v to {{.Type}}", v)
+	}
+
+	*h.items = append(*h.items, res)
+	return nil
+}
+
+func New{{.TypeName}}Handler(name string, index int, nullable bool) *{{.TypeName}}Handler {
+	field := arrow.Field{
+		Name:     name,
+		Type:     arrow.PrimitiveTypes.{{.ArrowType}},
+		Nullable: nullable,
+	}
+
+	items := make([]{{.Type}}, 0)
+
+	return &{{.TypeName}}Handler{
+		field: field,
+		items: &items,
+		index: index,
+	}
+}
+
+func (h *{{.TypeName}}Handler) Build(builder *array.RecordBuilder) {
+	builder.Field(h.index).(*array.{{.BuilderType}}).AppendValues(*h.items, nil)
+}
+
+func (h *{{.TypeName}}Handler) GetArrowField() arrow.Field {
+	return h.field
+}
