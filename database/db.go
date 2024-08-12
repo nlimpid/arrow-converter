@@ -127,15 +127,9 @@ func GetPGColumnHandler(index int, col *sql.ColumnType) (ArrowHandler, error) {
 		if !ok {
 			return nil, fmt.Errorf("column decimal size is invalid")
 		}
-		// TODO: FixME
-		if scale >= 39 {
-			scale = 38
-		}
-		if precision >= 65535 {
-			precision = 38
-		}
+		precisionI32, scaleI32 := scalePGDecimal128(precision, scale)
 		slog.Debug("pg column type", "name", columnName, "type", col.DatabaseTypeName(), "precision", precision, "scale", scale, "ok", ok)
-		return column.NewDecimalHandler(columnName, index, columnNullable, int32(precision), int32(scale)), nil
+		return column.NewDecimalHandler(columnName, index, columnNullable, precisionI32, scaleI32), nil
 	case "TIMESTAMP", "TIMESTAMPTZ", "DATE", "TIME":
 		return column.NewTimeHandler(columnName, index, columnNullable), nil
 	}
