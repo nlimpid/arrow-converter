@@ -24,6 +24,7 @@ func (suite *PGSuite) SetupSuite() {
 	}
 
 	connStr := os.Getenv("PG_URL")
+	slog.Info("connStr ", "url", connStr)
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		panic(err)
