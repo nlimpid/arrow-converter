@@ -9,7 +9,7 @@ import (
 
 type TimeHandler struct {
 	field arrow.Field
-	items *[]arrow.Date64
+	items *[]arrow.Timestamp
 	index int
 }
 
@@ -32,20 +32,18 @@ func (h *TimeHandler) Add(v any) error {
 	} else {
 		return fmt.Errorf("cannot convert %v to time.Time ", v)
 	}
-
-	*h.items = append(*h.items, arrow.Date64FromTime(res))
+	it, _ := arrow.TimestampFromTime(res, arrow.Second)
+	*h.items = append(*h.items, it)
 	return nil
 }
 
 func NewTimeHandler(name string, index int, nullable bool) *TimeHandler {
 	field := arrow.Field{
 		Name:     name,
-		Type:     arrow.PrimitiveTypes.Date64,
+		Type:     arrow.FixedWidthTypes.Timestamp_s,
 		Nullable: nullable,
 	}
-
-	items := make([]arrow.Date64, 0)
-
+	items := make([]arrow.Timestamp, 0)
 	return &TimeHandler{
 		field: field,
 		items: &items,
@@ -54,7 +52,7 @@ func NewTimeHandler(name string, index int, nullable bool) *TimeHandler {
 }
 
 func (h *TimeHandler) Build(builder *array.RecordBuilder) {
-	builder.Field(h.index).(*array.Date64Builder).AppendValues(*h.items, nil)
+	builder.Field(h.index).(*array.TimestampBuilder).AppendValues(*h.items, nil)
 }
 
 func (h *TimeHandler) GetArrowField() arrow.Field {

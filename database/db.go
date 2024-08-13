@@ -110,7 +110,10 @@ type ArrowHandler interface {
 
 func GetPGColumnHandler(index int, col *sql.ColumnType) (ArrowHandler, error) {
 	columnName := col.Name()
-	columnNullable, _ := col.Nullable()
+	columnNullable, nullableOK := col.Nullable()
+	if !nullableOK {
+		slog.Debug("column nullable", "column", columnName)
+	}
 	slog.Debug("pg column type", "name", columnName, "type", col.DatabaseTypeName())
 
 	// https://github.com/lib/pq/blob/master/oid/types.go
