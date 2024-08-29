@@ -3,7 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
-	"github.com/apache/arrow/go/v17/parquet/file"
+	"github.com/apache/arrow/go/v18/parquet/file"
 	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/suite"
 	"log/slog"
