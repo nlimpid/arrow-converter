@@ -11,7 +11,7 @@ package conv
 //	// Create Arrow schema
 //	fields := make([]arrow.Field, len(fieldMappings))
 //	for i, mapping := range fieldMappings {
-//		fields[i] = arrow.Field{Name: mapping.StructField, Type: mapping.FieldType}
+//		fields[i] = arrow.Field{Name: mapping.StructFieldName, Type: mapping.FieldType}
 //	}
 //	schema := arrow.NewSchema(fields, nil)
 //
@@ -34,14 +34,14 @@ package conv
 //	return writeTableToParquet(table, filename)
 //}
 //
-//func createArrowArrays[T any](data []T, fieldMappings []FieldMapping) ([]arrow.Array, error) {
+//func createArrowArrays[T any](data []T, fieldMappings []StructArrowInfo) ([]arrow.Array, error) {
 //	arrays := make([]arrow.Array, len(fieldMappings))
 //	for i, mapping := range fieldMappings {
 //		builder := array.NewBuilder(memory.DefaultAllocator, mapping.FieldType)
 //		defer builder.Release()
 //
 //		for _, item := range data {
-//			value := reflect.ValueOf(item).FieldByName(mapping.StructField)
+//			value := reflect.ValueOf(item).FieldByName(mapping.StructFieldName)
 //			if err := appendToBuilder(builder, value); err != nil {
 //				return nil, err
 //			}
