@@ -24,17 +24,17 @@ func NewEnc() *Enc {
 	return &Enc{}
 }
 
-type FieldMapping struct {
-	ArrowName   string
-	StructField string
-	FieldType   arrow.DataType
+type StructArrowInfo struct {
+	// ArrowName the name in arrow
+	ArrowName string
+	FieldType arrow.DataType
+	// StructFieldName the name in struct
+	StructFieldName string
 }
 
-func getFieldMappings[T any]() ([]FieldMapping, error) {
-	var fieldMappings []FieldMapping
-
-	t := reflect.TypeOf((*T)(nil)).Elem()
-
+func getStructArrowInfo(instance any) ([]StructArrowInfo, error) {
+	var fieldMappings []StructArrowInfo
+	t := reflect.TypeOf(instance).Elem()
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		tag := field.Tag.Get("arrow")
@@ -67,10 +67,10 @@ func getFieldMappings[T any]() ([]FieldMapping, error) {
 			return nil, err
 		}
 
-		fieldMappings = append(fieldMappings, FieldMapping{
-			ArrowName:   arrowName,
-			StructField: field.Name,
-			FieldType:   fieldType,
+		fieldMappings = append(fieldMappings, StructArrowInfo{
+			ArrowName:       arrowName,
+			StructFieldName: field.Name,
+			FieldType:       fieldType,
 		})
 	}
 
@@ -123,7 +123,7 @@ func getArrowDataType(t reflect.Type) (arrow.DataType, error) {
 }
 
 func ParquetToStructsDynamic[T any](ctx context.Context, enc *Enc, filename string) ([]T, error) {
-	fieldMappings, err := getFieldMappings[T]()
+	fieldMappings, err := getStructArrowInfo(new(T))
 	if err != nil {
 		return nil, err
 	}
@@ -144,43 +144,40 @@ func ParquetToStructsDynamic[T any](ctx context.Context, enc *Enc, filename stri
 	}
 	defer table.Release()
 
-	return extractStructs[T](ctx, enc, table, fieldMappings)
+	fieldMappingsMap := make(map[ArrowName]StructArrowInfo)
+	for _, v := range fieldMappings {
+		fieldMappingsMap[ArrowName(v.ArrowName)] = v
+	}
+
+	return extractStructs[T](ctx, enc, table, fieldMappingsMap)
 }
 
-func extractStructs[T any](ctx context.Context, enc *Enc, table arrow.Table, fieldMappings []FieldMapping) ([]T, error) {
+type ArrowName string
+
+func extractStructs[T any](ctx context.Context, enc *Enc, table arrow.Table, structArrowInfo map[ArrowName]StructArrowInfo) ([]T, error) {
 	// parquet name to index mapping
-	nameToIndex := make(map[string]int, table.Schema().NumFields())
+	arrowName2Index := make(map[string]int, table.Schema().NumFields())
 	for i, field := range table.Schema().Fields() {
-		nameToIndex[field.Name] = i
+		arrowName2Index[field.Name] = i
 	}
 
-	for k, v := range nameToIndex {
-		slog.Debug("nameToIndex", k, v)
-	}
-
-	// 创建字段名到 FieldMapping 的映射
-	mappingByName := make(map[string]FieldMapping)
-	for _, mapping := range fieldMappings {
-		slog.Debug("field mapping", "mapping info", mapping)
-		mappingByName[mapping.ArrowName] = mapping
+	for k, v := range arrowName2Index {
+		slog.Debug("arrowName2Index", k, v)
 	}
 
 	var structs []T
 	for i := 0; i < int(table.NumRows()); i++ {
 		var structInstance T
 		val := reflect.ValueOf(&structInstance).Elem()
-		for fieldName, colIndex := range nameToIndex {
-			mapping, ok := mappingByName[fieldName]
+		for fieldName, colIndex := range arrowName2Index {
+			mapping, ok := structArrowInfo[ArrowName(fieldName)]
 			if !ok {
-				// 如果 mapping 中没有这个字段，就忽略它
 				continue
 			}
-
-			field := val.FieldByName(mapping.StructField)
+			field := val.FieldByName(mapping.StructFieldName)
 			if !field.IsValid() {
-				return nil, fmt.Errorf("no such field: %s in struct", mapping.StructField)
+				return nil, fmt.Errorf("no such field: %s in struct", mapping.StructFieldName)
 			}
-
 			if err := setFieldValue(field, table.Column(colIndex), i); err != nil {
 				return nil, err
 			}
@@ -212,5 +209,22 @@ func setChunkValue(field reflect.Value, col arrow.Array, index int) error {
 	default:
 		return fmt.Errorf("unsupported field type: %s", field.Kind())
 	}
+	return nil
+}
+
+type FieldSetter interface {
+	SetFieldValue(fieldName string, value any) error
+}
+
+// 通用的 setField 函数，处理两种情况：实现了 FieldSetter 接口或使用反射
+func setField(instance any, fieldName string, value any, reflectCache map[string]reflect.Value) error {
+	// 检查实例是否实现了 FieldSetter 接口
+	if setter, ok := instance.(FieldSetter); ok {
+		return setter.SetFieldValue(fieldName, value)
+	}
+
+	// 使用反射操作设置字段值
+	val := reflect.ValueOf(instance).Elem()
+	val.FieldByName(fieldName).Set(reflect.ValueOf(value))
 	return nil
 }
