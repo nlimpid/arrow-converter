@@ -160,17 +160,20 @@ func extractStructs[T any](ctx context.Context, enc *Enc, table arrow.Table, str
 	for i, field := range table.Schema().Fields() {
 		arrowName2Index[field.Name] = i
 	}
+	num := table.NumCols()
+	slog.Debug("arrow columns", "num", num)
+	result := make([]T, 0, num)
 
-	for k, v := range arrowName2Index {
-		slog.Debug("arrowName2Index", k, v)
+	iters, err := ParseTable(table)
+	if err != nil {
+		return nil, err
 	}
 
-	var structs []T
 	for i := 0; i < int(table.NumRows()); i++ {
 		var structInstance T
 		val := reflect.ValueOf(&structInstance).Elem()
-		for fieldName, colIndex := range arrowName2Index {
-			mapping, ok := structArrowInfo[ArrowName(fieldName)]
+		for fieldName, mapping := range structArrowInfo {
+			arrowIter, ok := iters[string(fieldName)]
 			if !ok {
 				continue
 			}
@@ -178,15 +181,34 @@ func extractStructs[T any](ctx context.Context, enc *Enc, table arrow.Table, str
 			if !field.IsValid() {
 				return nil, fmt.Errorf("no such field: %s in struct", mapping.StructFieldName)
 			}
-			if err := setFieldValue(field, table.Column(colIndex), i); err != nil {
-				return nil, err
-			}
+			setFieldValueIter(field, arrowIter, i)
 		}
 
-		structs = append(structs, structInstance)
+		result = append(result, structInstance)
 	}
 
-	return structs, nil
+	return result, nil
+}
+
+func setFieldValueIter(field reflect.Value, arrowIter Reader, i int) error {
+	value := arrowIter.Value(i)
+	if value == nil {
+		field.Set(reflect.Zero(field.Type())) // 处理 null 值，设置为零值
+		return nil
+	}
+	switch v := value.(type) {
+	case bool:
+		field.SetBool(v)
+	case int8, int16, int32, int64:
+		field.SetInt(reflect.ValueOf(v).Int())
+	case uint8, uint16, uint32, uint64:
+		field.SetUint(reflect.ValueOf(v).Uint())
+	case float32, float64:
+		field.SetFloat(reflect.ValueOf(v).Float())
+	case string:
+		field.SetString(v)
+	}
+	return nil
 }
 
 func setFieldValue(field reflect.Value, col *arrow.Column, index int) error {
