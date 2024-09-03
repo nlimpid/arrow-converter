@@ -72,5 +72,6 @@ func Test_ParquetToStructsDynamic(t *testing.T) {
 	slog.Info("Number of orders", "count", len(got))
 	if len(got) > 0 {
 		slog.Info("First order", "order", got[0])
+		slog.Info("First order", "order", got[1])
 	}
 }
