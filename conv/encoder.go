@@ -1,262 +1,173 @@
 package conv
 
 import (
-	"context"
+	"database/sql"
 	"fmt"
-	"google.golang.org/genproto/googleapis/type/decimal"
-	"io"
-	"log/slog"
-	"reflect"
-	"strconv"
-	"strings"
-	"time"
-
 	"github.com/apache/arrow/go/v18/arrow"
 	"github.com/apache/arrow/go/v18/arrow/array"
 	"github.com/apache/arrow/go/v18/arrow/memory"
-	"github.com/apache/arrow/go/v18/parquet/file"
 	"github.com/apache/arrow/go/v18/parquet/pqarrow"
+	"github.com/nlimpid/arrow-converter/column"
+	"io"
+	"log/slog"
+	"reflect"
+	"time"
 )
 
-type Encoder struct {
-	r At
+type Encoder[T any] struct {
+	arrowManager *ArrowHandlerManager
+	schema       *arrow.Schema
 }
 
-type At interface {
-	io.ReaderAt
-	io.Seeker
-}
+// NewEncoder create a memory encoder
+func NewEncoder[T any]() (*Encoder[T], error) {
 
-// NewEncoder read the file or bytes, encode to values
-func NewEncoder(r At) *Encoder {
-	return &Encoder{
-		r: r,
+	// get struct info
+	structInfo, err := getStructArrowInfo[T]()
+	if err != nil {
+		return nil, err
 	}
-}
+	enc := &Encoder[T]{
+		arrowManager: &ArrowHandlerManager{
+			handlers: make([]ArrowHandler, 0, len(structInfo)),
+		},
+	}
 
-type StructArrowInfo struct {
-	// ArrowName the name in arrow
-	ArrowName string
-	FieldType arrow.DataType
-	// StructFieldName the name in struct
-	StructFieldName string
-}
-
-func getStructArrowInfo(instance any) ([]StructArrowInfo, error) {
-	var fieldMappings []StructArrowInfo
-	t := reflect.TypeOf(instance).Elem()
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		tag := field.Tag.Get("arrow")
-
-		if tag == "" {
-			return nil, fmt.Errorf("missing `arrow` tag in field: %s", field.Name)
-		}
-
-		parts := strings.Split(tag, "=")
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid `arrow` tag format in field: %s", field.Name)
-		}
-
-		var arrowName string
-		switch parts[0] {
-		case "index":
-			index, err := strconv.Atoi(parts[1])
-			if err != nil {
-				return nil, fmt.Errorf("invalid index in `arrow` tag for field: %s", field.Name)
-			}
-			arrowName = strconv.Itoa(index)
-		case "name":
-			arrowName = parts[1]
-		default:
-			return nil, fmt.Errorf("invalid `arrow` tag key in field: %s, expected 'index' or 'name'", field.Name)
-		}
-
-		fieldType, err := getArrowDataType(field.Type)
+	for idx, info := range structInfo {
+		handler, err := CreateGenericHandler(info, idx)
 		if err != nil {
 			return nil, err
 		}
-
-		fieldMappings = append(fieldMappings, StructArrowInfo{
-			ArrowName:       arrowName,
-			StructFieldName: field.Name,
-			FieldType:       fieldType,
-		})
+		enc.arrowManager.AddHandler(handler)
 	}
 
-	return fieldMappings, nil
+	enc.schema = enc.arrowManager.GetSchema()
+	return enc, nil
 }
 
-func getArrowDataType(t reflect.Type) (arrow.DataType, error) {
-	switch t.Kind() {
-	case reflect.Bool:
-		return arrow.FixedWidthTypes.Boolean, nil
-	case reflect.Int8:
-		return arrow.PrimitiveTypes.Int8, nil
-	case reflect.Int16:
-		return arrow.PrimitiveTypes.Int16, nil
-	case reflect.Int32:
-		return arrow.PrimitiveTypes.Int32, nil
-	case reflect.Int64:
-		return arrow.PrimitiveTypes.Int64, nil
-	case reflect.Uint8:
-		return arrow.PrimitiveTypes.Uint8, nil
-	case reflect.Uint16:
-		return arrow.PrimitiveTypes.Uint16, nil
-	case reflect.Uint32:
-		return arrow.PrimitiveTypes.Uint32, nil
-	case reflect.Uint64:
-		return arrow.PrimitiveTypes.Uint64, nil
-	case reflect.Float32:
-		return arrow.PrimitiveTypes.Float32, nil
-	case reflect.Float64:
-		return arrow.PrimitiveTypes.Float64, nil
-	case reflect.String:
-		return arrow.BinaryTypes.String, nil
-	case reflect.Struct:
-		if t == reflect.TypeOf(time.Time{}) {
-			return arrow.FixedWidthTypes.Timestamp_us, nil
+// Encode encode data to Writer(parquet file)
+func (e *Encoder[T]) Encode(data []T, w io.Writer) error {
+	// add data to handlers
+	for _, record := range data {
+		rv := reflect.ValueOf(record)
+		if rv.Kind() == reflect.Ptr {
+			rv = rv.Elem()
 		}
-		if t == reflect.TypeOf(decimal.Decimal{}) {
-			// 默认使用 128 位精度，可以根据需要调整
-			return &arrow.Decimal128Type{Precision: 38, Scale: 10}, nil
+		if rv.Kind() != reflect.Struct {
+			return fmt.Errorf("slice elements must be structs")
 		}
-	case reflect.Slice:
-		if t.Elem().Kind() == reflect.Uint8 {
-			return arrow.BinaryTypes.Binary, nil
-		}
-	default:
-		panic("unhandled default case")
-	}
 
-	return nil, fmt.Errorf("unsupported field type: %s", t.Kind())
-}
-
-func ParquetToStructsDynamic[T any](ctx context.Context, enc *Encoder) ([]T, error) {
-	fieldMappings, err := getStructArrowInfo(new(T))
-	if err != nil {
-		return nil, err
-	}
-	f, err := file.NewParquetReader(enc.r)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	reader, err := pqarrow.NewFileReader(f, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
-	if err != nil {
-		return nil, err
-	}
-
-	table, err := reader.ReadTable(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	defer table.Release()
-
-	fieldMappingsMap := make(map[ArrowName]StructArrowInfo)
-	for _, v := range fieldMappings {
-		fieldMappingsMap[ArrowName(v.ArrowName)] = v
-	}
-
-	return extractStructs[T](ctx, enc, table, fieldMappingsMap)
-}
-
-type ArrowName string
-
-func extractStructs[T any](ctx context.Context, enc *Encoder, table arrow.Table, structArrowInfo map[ArrowName]StructArrowInfo) ([]T, error) {
-	// parquet name to index mapping
-	arrowName2Index := make(map[string]int, table.Schema().NumFields())
-	for i, field := range table.Schema().Fields() {
-		arrowName2Index[field.Name] = i
-	}
-	num := table.NumCols()
-	slog.Debug("arrow columns", "num", num)
-	result := make([]T, 0, num)
-
-	iters, err := ParseTable(table)
-	if err != nil {
-		return nil, err
-	}
-
-	for i := 0; i < int(table.NumRows()); i++ {
-		var structInstance T
-		val := reflect.ValueOf(&structInstance).Elem()
-		for fieldName, mapping := range structArrowInfo {
-			arrowIter, ok := iters[string(fieldName)]
-			if !ok {
+		for _, handler := range e.arrowManager.handlers {
+			field := rv.FieldByName(handler.GetFieldName())
+			if !field.IsValid() {
+				return fmt.Errorf("no such field: %s in struct", handler.GetArrowField().Name)
+			}
+			if !field.CanAddr() {
+				slog.Info("handler add data", "name", handler.GetArrowField().Name, "val", field.Interface())
+				if err := handler.Add(field.Interface()); err != nil {
+					return fmt.Errorf("cannot add field %s to array", handler.GetArrowField().Name)
+				}
 				continue
 			}
-			field := val.FieldByName(mapping.StructFieldName)
-			if !field.IsValid() {
-				return nil, fmt.Errorf("no such field: %s in struct", mapping.StructFieldName)
+			if err := handler.Add(field.Addr().Interface()); err != nil {
+				return fmt.Errorf("failed to add value for field %s: %v", handler.GetArrowField().Name, err)
 			}
-			setFieldValueIter(field, arrowIter, i)
 		}
-
-		result = append(result, structInstance)
 	}
 
-	return result, nil
-}
+	// 构建 Arrow Record
+	builder := array.NewRecordBuilder(memory.DefaultAllocator, e.schema)
+	defer builder.Release()
+	e.arrowManager.BuildRecord(builder)
+	record := builder.NewRecord()
+	defer record.Release()
 
-func setFieldValueIter(field reflect.Value, arrowIter Reader, i int) error {
-	value := arrowIter.Value(i)
-	if value == nil {
-		field.Set(reflect.Zero(field.Type())) // 处理 null 值，设置为零值
-		return nil
+	// 写入 Parquet 文件
+	fw, err := pqarrow.NewFileWriter(e.schema, w, nil, pqarrow.DefaultWriterProps())
+	if err != nil {
+		return fmt.Errorf("new pqarrow writer err: %v", err)
 	}
-	switch v := value.(type) {
-	case bool:
-		field.SetBool(v)
-	case int8, int16, int32, int64:
-		field.SetInt(reflect.ValueOf(v).Int())
-	case uint8, uint16, uint32, uint64:
-		field.SetUint(reflect.ValueOf(v).Uint())
-	case float32, float64:
-		field.SetFloat(reflect.ValueOf(v).Float())
-	case string:
-		field.SetString(v)
+
+	if err := fw.Write(record); err != nil {
+		return fmt.Errorf("write record err: %v", err)
+	}
+
+	if err := fw.Close(); err != nil {
+		return fmt.Errorf("close writer err: %v", err)
 	}
 	return nil
 }
 
-func setFieldValue(field reflect.Value, col *arrow.Column, index int) error {
-	for _, v := range col.Data().Chunks() {
-		if err := setChunkValue(field, v, index); err != nil {
-			return err
-		}
-	}
-	return nil
-}
+// CreateGenericHandler 根据 StructArrowInfo 创建对应的 ArrowHandler
+func CreateGenericHandler(info *StructArrowInfo, index int) (ArrowHandler, error) {
+	slog.Info("create generic handler", "info", info.ArrowType.Name(), "id", info.ArrowType.ID())
+	switch info.ArrowType.ID() {
+	case arrow.PrimitiveTypes.Int32.ID():
+		return NewGenericArrowHandler[int32](info, index, false)
+	case arrow.PrimitiveTypes.Int64.ID():
+		return NewGenericArrowHandler[int64](info, index, false)
+	case arrow.PrimitiveTypes.Float64.ID():
+		return NewGenericArrowHandler[float64](info, index, false)
+	case arrow.FixedWidthTypes.Boolean.ID():
+		return NewGenericArrowHandler[bool](info, index, false)
+	case arrow.BinaryTypes.String.ID():
+		return NewGenericArrowHandler[string](info, index, false)
+	case arrow.FixedWidthTypes.Date32.ID():
+		return NewGenericArrowHandler[time.Time](info, index, false)
+		// 时间类型
+	case arrow.FixedWidthTypes.Timestamp_ms.ID():
+		return NewGenericArrowHandler[arrow.Timestamp](info, index, false)
+	case arrow.FixedWidthTypes.Timestamp_us.ID():
+		return NewGenericArrowHandler[arrow.Timestamp](info, index, false)
+	case arrow.FixedWidthTypes.Timestamp_ns.ID():
+		return NewGenericArrowHandler[arrow.Timestamp](info, index, false)
+	case arrow.FixedWidthTypes.Timestamp_s.ID():
+		return NewGenericArrowHandler[arrow.Timestamp](info, index, false)
 
-func setChunkValue(field reflect.Value, col arrow.Array, index int) error {
-	switch field.Kind() {
-	case reflect.Int32:
-		field.SetInt(int64(col.(*array.Int32).Value(index)))
-	case reflect.String:
-		field.SetString(col.(*array.String).Value(index))
-	case reflect.Float64:
-		field.SetFloat(col.(*array.Float64).Value(index))
+	// 日期类型
+	case arrow.PrimitiveTypes.Date32.ID():
+		return NewGenericArrowHandler[int32](info, index, false)
+	case arrow.PrimitiveTypes.Date64.ID():
+		return NewGenericArrowHandler[int64](info, index, false)
+
 	default:
-		return fmt.Errorf("unsupported field type: %s", field.Kind())
+		return nil, fmt.Errorf("unsupported Arrow type: %s", info.ArrowType.Name())
 	}
-	return nil
 }
 
-type FieldSetter interface {
-	SetFieldValue(fieldName string, value any) error
-}
+func GetPGColumnHandler(index int, col *sql.ColumnType) (ArrowHandler, error) {
+	columnName := col.Name()
+	columnNullable, _ := col.Nullable()
+	varInt := reflect.New(col.ScanType()).Elem().Interface()
 
-// 通用的 setField 函数，处理两种情况：实现了 FieldSetter 接口或使用反射
-func setField(instance any, fieldName string, value any, reflectCache map[string]reflect.Value) error {
-	// 检查实例是否实现了 FieldSetter 接口
-	if setter, ok := instance.(FieldSetter); ok {
-		return setter.SetFieldValue(fieldName, value)
+	slog.Debug("pg column type", "name", columnName, "type", col.DatabaseTypeName())
+
+	// https://github.com/lib/pq/blob/master/oid/types.go
+	switch col.DatabaseTypeName() {
+	case "INT8", "INT2":
+		return NewGenericArrowHandler[int32](info, index, false)
+	case "INT4":
+		return column.NewInt32Handler(columnName, index, columnNullable), nil
+	case "VARCHAR", "CHAR":
+		return column.NewStringHandler(columnName, index, columnNullable), nil
+		// as string then to decimal
+	case "NUMERIC":
+		precision, scale, ok := col.DecimalSize()
+		if !ok {
+			return nil, fmt.Errorf("column decimal size is invalid")
+		}
+		// TODO: FixME
+		if scale >= 39 {
+			scale = 38
+		}
+		if precision >= 65535 {
+			precision = 38
+		}
+		slog.Debug("pg column type", "name", columnName, "type", col.DatabaseTypeName(), "precision", precision, "scale", scale, "ok", ok)
+		return column.NewDecimalHandler(columnName, index, columnNullable, int32(precision), int32(scale)), nil
+	case "TIMESTAMP", "TIMESTAMPTZ", "DATE", "TIME":
+		return column.NewTimeHandler(columnName, index, columnNullable), nil
 	}
 
-	// 使用反射操作设置字段值
-	val := reflect.ValueOf(instance).Elem()
-	val.FieldByName(fieldName).Set(reflect.ValueOf(value))
-	return nil
+	return nil, fmt.Errorf("unsupported col type: %s", col.DatabaseTypeName())
 }

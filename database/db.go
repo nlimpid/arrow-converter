@@ -32,7 +32,7 @@ func (h *PGConverter) HandleRows(ctx context.Context, rows *sql.Rows) ([]ArrowHa
 	}
 	rowNum := len(columnTypes)
 	arrowHandlerMap := make([]ArrowHandler, rowNum)
-	emptyScan := make([]interface{}, rowNum)
+	emptyScan := make([]any, rowNum)
 	for idx, columnType := range columnTypes {
 		h, err := GetPGColumnHandler(idx, columnType)
 		if err != nil {
