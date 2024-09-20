@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"github.com/apache/arrow/go/v18/arrow"
 	"github.com/apache/arrow/go/v18/arrow/array"
+	"log/slog"
+	"reflect"
 )
 
 type Int32Handler struct {
@@ -29,6 +31,7 @@ func (h *Int32Handler) Add(v any) error {
 	if item, ok := v.(*int32); ok {
 		res = *item
 	} else {
+		slog.Error("convert err", "v", reflect.TypeOf(v))
 		return fmt.Errorf("cannot convert %v to int32", v)
 	}
 

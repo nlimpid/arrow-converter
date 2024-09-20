@@ -1,12 +1,13 @@
 package conv
 
 import (
+	"bytes"
 	"context"
+	"github.com/stretchr/testify/assert"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -50,16 +51,16 @@ func Test_ParquetToStructsDynamic(t *testing.T) {
 
 	// 下载 Parquet 文件
 	fileURL := "https://shell.duckdb.org/data/tpch/0_01/parquet/orders.parquet"
-	filePath := filepath.Join(tempDir, "orders.parquet")
-	err = downloadFile(fileURL, filePath)
-	if err != nil {
-		t.Fatalf("Failed to download file: %v", err)
-	}
-
+	b, err := http.Get(fileURL)
+	assert.NoError(t, err)
+	defer func() {
+		b.Body.Close()
+	}()
+	content, _ := io.ReadAll(b.Body)
 	// 执行测试
 	ctx := context.Background()
-	enc := NewEnc()
-	got, err := ParquetToStructsDynamic[Order](ctx, enc, filePath)
+	enc := NewEncoder(bytes.NewReader(content))
+	got, err := ParquetToStructsDynamic[Order](ctx, enc)
 	if err != nil {
 		t.Fatalf("ParquetToStructsDynamic failed: %v", err)
 	}
@@ -74,4 +75,14 @@ func Test_ParquetToStructsDynamic(t *testing.T) {
 		slog.Info("First order", "order", got[0])
 		slog.Info("First order", "order", got[1])
 	}
+
+	// enc
+	w := bytes.NewBuffer(nil)
+	dec := NewDecoder[Order](w)
+	err = dec.decodeArrow(context.Background(), got)
+	assert.NoError(t, err)
+	for _, v := range dec.arrowHandlers {
+		slog.Info("handler", "name", v.GetArrowField())
+	}
+
 }
