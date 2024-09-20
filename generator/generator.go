@@ -19,6 +19,7 @@ func main() {
 		{"Int32", "int32", "Int32", "Int32Builder"},
 		{"Uint64", "int64", "Int64", "Int64Builder"},
 		{"Float64", "float64", "Float64", "Float64Builder"},
+		{"Bool", "bool", "Bool", "BoolBuilder"},
 	}
 
 	tmpl, err := template.ParseFiles("handler.tmpl")

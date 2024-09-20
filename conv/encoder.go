@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"google.golang.org/genproto/googleapis/type/decimal"
+	"io"
 	"log/slog"
 	"reflect"
 	"strconv"
@@ -17,11 +18,20 @@ import (
 	"github.com/apache/arrow/go/v18/parquet/pqarrow"
 )
 
-type Enc struct {
+type Encoder struct {
+	r At
 }
 
-func NewEnc() *Enc {
-	return &Enc{}
+type At interface {
+	io.ReaderAt
+	io.Seeker
+}
+
+// NewEncoder read the file or bytes, encode to values
+func NewEncoder(r At) *Encoder {
+	return &Encoder{
+		r: r,
+	}
 }
 
 type StructArrowInfo struct {
@@ -122,12 +132,12 @@ func getArrowDataType(t reflect.Type) (arrow.DataType, error) {
 	return nil, fmt.Errorf("unsupported field type: %s", t.Kind())
 }
 
-func ParquetToStructsDynamic[T any](ctx context.Context, enc *Enc, filename string) ([]T, error) {
+func ParquetToStructsDynamic[T any](ctx context.Context, enc *Encoder) ([]T, error) {
 	fieldMappings, err := getStructArrowInfo(new(T))
 	if err != nil {
 		return nil, err
 	}
-	f, err := file.OpenParquetFile(filename, true)
+	f, err := file.NewParquetReader(enc.r)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +164,7 @@ func ParquetToStructsDynamic[T any](ctx context.Context, enc *Enc, filename stri
 
 type ArrowName string
 
-func extractStructs[T any](ctx context.Context, enc *Enc, table arrow.Table, structArrowInfo map[ArrowName]StructArrowInfo) ([]T, error) {
+func extractStructs[T any](ctx context.Context, enc *Encoder, table arrow.Table, structArrowInfo map[ArrowName]StructArrowInfo) ([]T, error) {
 	// parquet name to index mapping
 	arrowName2Index := make(map[string]int, table.Schema().NumFields())
 	for i, field := range table.Schema().Fields() {
