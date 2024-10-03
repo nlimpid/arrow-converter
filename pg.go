@@ -1,25 +1,27 @@
-package database
+package arrow_conv
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"log/slog"
+	"strings"
+
 	"github.com/apache/arrow/go/v17/arrow"
 	"github.com/apache/arrow/go/v17/arrow/array"
 	"github.com/apache/arrow/go/v17/arrow/ipc"
 	"github.com/apache/arrow/go/v17/arrow/memory"
 	"github.com/apache/arrow/go/v17/parquet/pqarrow"
 	_ "github.com/lib/pq"
-	"github.com/nlimpid/go-arrow-tool/column"
-	"io"
-	"log/slog"
+	"github.com/nlimpid/arrow-conv/column"
 )
 
 type PGConverter struct {
 	db *sql.DB
 }
 
-func NewHandler(db *sql.DB) *PGConverter {
+func NewPGConverter(db *sql.DB) *PGConverter {
 	return &PGConverter{
 		db: db,
 	}
@@ -39,7 +41,7 @@ func (h *PGConverter) HandleRows(ctx context.Context, rows *sql.Rows) ([]ArrowHa
 			return nil, err
 		}
 		arrowHandlerMap[idx] = h
-		emptyScan[idx] = h.GetValue()
+		emptyScan[idx] = h.GetScanType()
 	}
 	slog.Error("emptyScan", "emtpy", emptyScan)
 
@@ -100,14 +102,6 @@ func debugR(r *ipc.Reader) {
 	slog.Info("schema is %s", sc.String(), "")
 }
 
-type ArrowHandler interface {
-	GetArrowField() arrow.Field
-	GetIndex() int
-	Add(v any) error
-	GetValue() any
-	Build(builder *array.RecordBuilder)
-}
-
 func GetPGColumnHandler(index int, col *sql.ColumnType) (ArrowHandler, error) {
 	columnName := col.Name()
 	columnNullable, _ := col.Nullable()
@@ -137,8 +131,37 @@ func GetPGColumnHandler(index int, col *sql.ColumnType) (ArrowHandler, error) {
 		slog.Debug("pg column type", "name", columnName, "type", col.DatabaseTypeName(), "precision", precision, "scale", scale, "ok", ok)
 		return column.NewDecimalHandler(columnName, index, columnNullable, int32(precision), int32(scale)), nil
 	case "TIMESTAMP", "TIMESTAMPTZ", "DATE", "TIME":
-		return column.NewTimeHandler(columnName, index, columnNullable), nil
+		return column.NewTimestampHandler(columnName, index, columnNullable, arrow.Second), nil
 	}
 
 	return nil, fmt.Errorf("unsupported col type: %s", col.DatabaseTypeName())
+}
+
+func (a *PGConverter) WriteFromHandler(table string, handlers []ArrowHandler) error {
+	// Implement the logic to write data from handlers to PostgreSQL
+	// This is a simplified example and may need to be adjusted based on your specific requirements
+	placeholders := make([]string, len(handlers))
+	for i := range placeholders {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+	}
+
+	query := fmt.Sprintf("INSERT INTO %s VALUES (%s)", table, strings.Join(placeholders, ", "))
+	stmt, err := a.db.Prepare(query)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for handlers[0].Next() {
+		values := make([]interface{}, len(handlers))
+		for i, handler := range handlers {
+			values[i] = handler.Value()
+		}
+		_, err := stmt.Exec(values...)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

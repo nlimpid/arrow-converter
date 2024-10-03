@@ -1,14 +1,14 @@
-package database
+package arrow_conv
 
 import (
 	"context"
 	"database/sql"
-	"github.com/apache/arrow/go/v17/parquet/file"
-	"github.com/joho/godotenv"
-	"github.com/stretchr/testify/suite"
 	"log/slog"
 	"os"
 	"testing"
+
+	"github.com/apache/arrow/go/v17/parquet/file"
+	"github.com/stretchr/testify/suite"
 )
 
 type PGSuite struct {
@@ -19,9 +19,6 @@ type PGSuite struct {
 func (suite *PGSuite) SetupSuite() {
 	var err error
 	suite.Equal(nil, err)
-	if err := godotenv.Load("../local.env"); err != nil {
-		slog.Error("loading .env file")
-	}
 
 	connStr := os.Getenv("PG_URL")
 	db, err := sql.Open("postgres", connStr)
@@ -29,13 +26,11 @@ func (suite *PGSuite) SetupSuite() {
 		panic(err)
 	}
 	slog.SetLogLoggerLevel(slog.LevelDebug)
-	h := NewHandler(db)
+	h := NewPGConverter(db)
 	suite.h = h
 }
 
-func (suite *PGSuite) TearDownTest() {
-
-}
+func (suite *PGSuite) TearDownTest() {}
 
 func TestSuite(t *testing.T) {
 	suite.Run(t, new(PGSuite))
